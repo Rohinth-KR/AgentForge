@@ -24,6 +24,18 @@ class Settings:
     langsmith_api_key: str | None
     langsmith_tracing: bool
     langsmith_project: str
+    run_db_path: Path
+    checkpoint_db_path: Path
+
+
+def resolve_project_path(value: str | None, default: Path) -> Path:
+    if not value:
+        return default
+
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
 
 
 def get_settings() -> Settings:
@@ -36,6 +48,14 @@ def get_settings() -> Settings:
         langsmith_api_key=os.getenv("LANGSMITH_API_KEY"),
         langsmith_tracing=os.getenv("LANGSMITH_TRACING", "false").lower() == "true",
         langsmith_project=os.getenv("LANGSMITH_PROJECT", "agentforge"),
+        run_db_path=resolve_project_path(
+            os.getenv("AGENTFORGE_RUN_DB"),
+            BACKEND_ROOT / "data" / "agentforge_runs.sqlite3",
+        ),
+        checkpoint_db_path=resolve_project_path(
+            os.getenv("AGENTFORGE_CHECKPOINT_DB"),
+            BACKEND_ROOT / "data" / "langgraph_checkpoints.sqlite3",
+        ),
     )
 
 

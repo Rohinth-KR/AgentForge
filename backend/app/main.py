@@ -1,10 +1,20 @@
 from fastapi import FastAPI
 
+from app.api.runs import router as runs_router
+from app.db import init_db
+
 app = FastAPI(
     title="AgentForge API",
     version="0.1.0",
     description="Backend API for the AgentForge multi-agent orchestration platform.",
 )
+
+app.include_router(runs_router)
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    init_db()
 
 
 @app.get("/")

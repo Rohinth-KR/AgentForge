@@ -7,5 +7,6 @@ langchain>=0.3.0
 langchain-core>=0.3.0
 langchain-groq>=0.2.0
 langgraph>=1.0.0
+langgraph-checkpoint-sqlite>=2.0.0
 langsmith>=0.1.100
 tavily-python>=0.5.0
