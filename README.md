@@ -54,3 +54,18 @@ Poll the returned run ID:
 ```powershell
 Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/run/<run_id>"
 ```
+
+### Phase 3
+
+Start the API server (same as Phase 2), then test real-time streaming:
+
+**Browser test** — open `backend/test_stream.html` in any browser, type a task, and click ▶ Run Pipeline. Events stream into the log area live.
+
+**CLI test:**
+
+```powershell
+cd backend
+..\.venv\Scripts\python test_stream_cli.py "Compare React vs Vue for dashboards"
+```
+
+You should see events like `agent_start [researcher]`, `agent_output [researcher]`, `agent_complete [researcher]`, etc. streaming in real-time — not all at once after the run finishes.

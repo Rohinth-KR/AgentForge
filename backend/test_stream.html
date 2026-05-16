@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AgentForge — WebSocket Stream Test</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: #0a0a0f;
+      color: #e0e0e8;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem;
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      background: linear-gradient(135deg, #6366f1, #a78bfa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 1.5rem;
+    }
+
+    .controls {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 1.5rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    input[type="text"] {
+      background: #16161e;
+      border: 1px solid #2a2a3a;
+      border-radius: 8px;
+      color: #e0e0e8;
+      padding: 0.6rem 1rem;
+      font-size: 0.9rem;
+      width: 420px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input[type="text"]:focus { border-color: #6366f1; }
+
+    button {
+      background: linear-gradient(135deg, #6366f1, #818cf8);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 0.6rem 1.4rem;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    button:hover { opacity: 0.88; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .status-bar {
+      font-size: 0.8rem;
+      color: #888;
+      margin-bottom: 1rem;
+      text-align: center;
+    }
+    .status-bar .connected { color: #4ade80; }
+    .status-bar .error { color: #f87171; }
+
+    #log {
+      background: #111118;
+      border: 1px solid #1e1e2e;
+      border-radius: 10px;
+      padding: 1rem 1.2rem;
+      width: 100%;
+      max-width: 800px;
+      height: 500px;
+      overflow-y: auto;
+      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      font-size: 0.82rem;
+      line-height: 1.6;
+    }
+
+    .event { padding: 2px 0; }
+    .event .time { color: #555; }
+    .event.agent_start { color: #60a5fa; }
+    .event.agent_output { color: #a78bfa; }
+    .event.agent_complete { color: #4ade80; }
+    .event.run_complete { color: #fbbf24; font-weight: 600; }
+    .event.run_error { color: #f87171; font-weight: 600; }
+    .event.info { color: #888; font-style: italic; }
+  </style>
+</head>
+<body>
+  <h1>⚡ AgentForge — Live Stream Test</h1>
+
+  <div class="controls">
+    <input
+      type="text"
+      id="taskInput"
+      placeholder="Enter a task, e.g. 'Research top 3 AI startups in India'"
+      value="Research the top 3 AI startups in India and write a brief summary."
+    />
+    <button id="runBtn" onclick="startRun()">▶ Run Pipeline</button>
+  </div>
+
+  <div class="status-bar" id="statusBar">Ready</div>
+  <div id="log"></div>
+
+  <script>
+    const API_BASE = "http://localhost:8000";
+    const logEl = document.getElementById("log");
+    const statusBar = document.getElementById("statusBar");
+    const runBtn = document.getElementById("runBtn");
+    const taskInput = document.getElementById("taskInput");
+
+    let ws = null;
+
+    function log(text, className = "info") {
+      const div = document.createElement("div");
+      div.className = `event ${className}`;
+      const time = new Date().toLocaleTimeString();
+      div.innerHTML = `<span class="time">[${time}]</span> ${escapeHtml(text)}`;
+      logEl.appendChild(div);
+      logEl.scrollTop = logEl.scrollHeight;
+
+      // Also log to browser console for debugging
+      console.log(`[${className}]`, text);
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement("div");
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    function setStatus(html) {
+      statusBar.innerHTML = html;
+    }
+
+    async function startRun() {
+      const task = taskInput.value.trim();
+      if (!task) return;
+
+      runBtn.disabled = true;
+      log(`Submitting task: "${task}"`, "info");
+
+      // Step 1 — POST to create the run
+      let runId;
+      try {
+        const res = await fetch(`${API_BASE}/api/run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ task }),
+        });
+        const data = await res.json();
+        runId = data.run_id;
+        log(`Run created: ${runId}`, "info");
+      } catch (err) {
+        log(`Failed to create run: ${err.message}`, "run_error");
+        setStatus(`<span class="error">Failed to create run</span>`);
+        runBtn.disabled = false;
+        return;
+      }
+
+      // Step 2 — Open WebSocket to stream events
+      const wsUrl = `ws://localhost:8000/api/run/${runId}/stream`;
+      log(`Connecting WebSocket: ${wsUrl}`, "info");
+      setStatus(`<span class="connected">● Connected</span> — streaming run ${runId.slice(0, 8)}…`);
+
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        log("WebSocket connected — waiting for agent events…", "info");
+      };
+
+      ws.onmessage = (msg) => {
+        try {
+          const event = JSON.parse(msg.data);
+          const agent = event.agent ? ` [${event.agent}]` : "";
+          const contentPreview = event.content
+            ? `: ${event.content.slice(0, 120)}${event.content.length > 120 ? "…" : ""}`
+            : "";
+
+          log(`${event.type}${agent}${contentPreview}`, event.type);
+        } catch {
+          log(`Raw message: ${msg.data}`, "info");
+        }
+      };
+
+      ws.onerror = (err) => {
+        log(`WebSocket error`, "run_error");
+        setStatus(`<span class="error">● WebSocket error</span>`);
+      };
+
+      ws.onclose = (e) => {
+        log(`WebSocket closed (code ${e.code})`, "info");
+        setStatus(`Ready`);
+        runBtn.disabled = false;
+        ws = null;
+      };
+    }
+  </script>
+</body>
+</html>

@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.core.event_bus import AgentEvent, event_bus
 from app.db import RunRecord, SessionLocal, get_db
 from app.orchestrator import AgentForgeOrchestrator, DEFAULT_PIPELINE
 from app.orchestrator.graph import normalize_pipeline
@@ -105,7 +106,42 @@ def execute_pipeline_run(run_id: str) -> None:
         updated_at=utc_now(),
     )
 
+    # Track the previously active agent so we can emit start/complete events
+    _prev_agent: dict[str, str | None] = {"name": None}
+
     def on_update(update: AgentForgeState) -> None:
+        current = update.get("current_agent")
+        prev = _prev_agent["name"]
+
+        # If the active agent changed, emit complete for old + start for new
+        if current and current != prev:
+            if prev:
+                # Emit the output produced by the agent that just finished
+                output_key = {
+                    "researcher": "research_output",
+                    "writer": "writer_output",
+                    "critic": "critic_output",
+                }.get(prev)
+                content = update.get(output_key) if output_key else None
+                if content:
+                    event_bus.publish(AgentEvent(
+                        run_id=run_id,
+                        type="agent_output",
+                        agent=prev,
+                        content=content,
+                    ))
+                event_bus.publish(AgentEvent(
+                    run_id=run_id,
+                    type="agent_complete",
+                    agent=prev,
+                ))
+            event_bus.publish(AgentEvent(
+                run_id=run_id,
+                type="agent_start",
+                agent=current,
+            ))
+            _prev_agent["name"] = current
+
         _update_run(
             run_id,
             current_agent=update.get("current_agent", _sentinel),
@@ -122,6 +158,12 @@ def execute_pipeline_run(run_id: str) -> None:
             pipeline=pipeline,
         )
     except Exception as exc:
+        event_bus.publish(AgentEvent(
+            run_id=run_id,
+            type="run_error",
+            content=str(exc),
+        ))
+        event_bus.close(run_id)
         _update_run(
             run_id,
             status="failed",
@@ -131,6 +173,41 @@ def execute_pipeline_run(run_id: str) -> None:
             completed_at=utc_now(),
         )
         return
+
+    # Emit final agent_complete for the last active agent
+    last_agent = _prev_agent["name"]
+    if last_agent:
+        output_key = {
+            "researcher": "research_output",
+            "writer": "writer_output",
+            "critic": "critic_output",
+            "finalize": "final_output",
+        }.get(last_agent)
+        content = final_state.get(output_key) if output_key else None
+        if content:
+            event_bus.publish(AgentEvent(
+                run_id=run_id,
+                type="agent_output",
+                agent=last_agent,
+                content=content,
+            ))
+        event_bus.publish(AgentEvent(
+            run_id=run_id,
+            type="agent_complete",
+            agent=last_agent,
+        ))
+
+    event_bus.publish(AgentEvent(
+        run_id=run_id,
+        type="run_complete",
+        content=final_state.get("final_output"),
+        metadata={
+            "quality_status": final_state.get("quality_status"),
+            "revision_count": final_state.get("revision_count", 0),
+            "agent_trace": final_state.get("agent_trace", []),
+        },
+    ))
+    event_bus.close(run_id)
 
     _update_run(
         run_id,
