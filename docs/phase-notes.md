@@ -19,6 +19,18 @@
 - CORS middleware added to `app/main.py` so browser-based clients can connect.
 - Test clients: `test_stream.html` (browser) and `test_stream_cli.py` (terminal).
 
+## Phase 4
+
+- Built the visual canvas using React Flow (`@xyflow/react`) with custom `AgentNode` components.
+- Each node displays agent name, tools, status (idle/running/complete/error), and a live output preview.
+- Nodes pulse with a blue glow while running and turn green on completion.
+- Zustand store (`useCanvasStore`) manages all state: React Flow nodes/edges, run lifecycle, pipeline derivation from graph topology.
+- `dagre.js` auto-layout arranges nodes top-to-bottom when added.
+- `useRunStream` hook opens a WebSocket on run start and feeds parsed events into the store.
+- Layout: Sidebar (agent catalog + quick template) | Canvas | Toolbar (task input + run) | Output Panel (logs + final output).
+- Vite dev proxy forwards `/api` and WebSocket requests to the FastAPI backend at `:8000`.
+- **Limitation:** Pipeline is still fixed at Researcher → Writer → Critic (backend validation). Custom pipelines = Phase 5.
+
 ## Output Quality Tuning Guide (TODO — for demo polish)
 
 The pipeline architecture is solid, but the output can feel short/thin because the agent prompts were written conservatively for Phase 2 testing. Here are the levers to adjust when polishing for demos:

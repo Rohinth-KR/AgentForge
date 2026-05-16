@@ -15,3 +15,5 @@ frontend/.vite/
 
 .DS_Store
 Thumbs.db
+
+apikeys.txt
