@@ -29,7 +29,20 @@
 - `useRunStream` hook opens a WebSocket on run start and feeds parsed events into the store.
 - Layout: Sidebar (agent catalog + quick template) | Canvas | Toolbar (task input + run) | Output Panel (logs + final output).
 - Vite dev proxy forwards `/api` and WebSocket requests to the FastAPI backend at `:8000`.
-- **Limitation:** Pipeline is still fixed at Researcher → Writer → Critic (backend validation). Custom pipelines = Phase 5.
+- **Limitation:** Pipeline is still fixed at Researcher → Writer → Critic (backend validation). Custom pipelines = future work (see `docs/TODO.md`).
+
+## Phase 5
+
+- Added `AgentMetric` table for per-agent timing (start, end, duration_ms, tool_calls).
+- Added `total_duration_ms` to `RunRecord` for end-to-end pipeline timing.
+- New API: `GET /api/run/history` — returns recent runs for the history panel.
+- New API: `GET /api/metrics/summary` — returns aggregate stats (total/completed/failed, success rate, avg duration, per-agent breakdown).
+- Frontend: 3 preset pipeline templates (1 disabled as "coming soon" until dynamic pipelines).
+- Frontend: localStorage persistence — canvas layout survives browser refresh.
+- Frontend: Run History panel with status, timestamps, durations.
+- Frontend: Stats dashboard with KPI cards and animated per-agent bar chart.
+- Frontend: Keyboard shortcut `Ctrl+Enter` to run, copy output button, clear canvas button.
+- **Cleanup:** Removed Tailwind CSS (unused — all styling is vanilla CSS with BEM). Moved test files to `backend/tests/`. Removed stale `.gitkeep` placeholders and temp directories.
 
 ## Output Quality Tuning Guide (TODO — for demo polish)
 

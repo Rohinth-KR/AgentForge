@@ -1,4 +1,5 @@
 /* ── Toolbar — task input + run controls ────────────────────────── */
+import { useState } from "react";
 import { useCanvasStore } from "../../store/useCanvasStore";
 
 export function Toolbar() {
@@ -9,9 +10,20 @@ export function Toolbar() {
   const autoLayout = useCanvasStore((s) => s.autoLayout);
   const runStatus = useCanvasStore((s) => s.runStatus);
   const nodes = useCanvasStore((s) => s.nodes);
+  const finalOutput = useCanvasStore((s) => s.finalOutput);
+  const [copied, setCopied] = useState(false);
 
   const isRunning = runStatus === "running";
   const canRun = task.trim().length > 0 && nodes.length > 0 && !isRunning;
+
+  const copyOutput = async () => {
+    if (!finalOutput) return;
+    try {
+      await navigator.clipboard.writeText(finalOutput);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* clipboard not available */ }
+  };
 
   return (
     <div className="toolbar">
@@ -26,7 +38,7 @@ export function Toolbar() {
           onChange={(e) => setTask(e.target.value)}
           disabled={isRunning}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && canRun) startRun();
+            if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && canRun) startRun();
           }}
         />
       </div>
@@ -41,6 +53,17 @@ export function Toolbar() {
         >
           ⊞ Layout
         </button>
+
+        {finalOutput && (
+          <button
+            id="btn-copy"
+            className="toolbar__btn toolbar__btn--secondary"
+            onClick={copyOutput}
+            title="Copy output to clipboard"
+          >
+            {copied ? "✓ Copied" : "📋 Copy"}
+          </button>
+        )}
 
         {(runStatus === "success" || runStatus === "error") && (
           <button
@@ -57,6 +80,7 @@ export function Toolbar() {
           className={`toolbar__btn toolbar__btn--primary ${isRunning ? "toolbar__btn--running" : ""}`}
           onClick={startRun}
           disabled={!canRun}
+          title="Ctrl+Enter"
         >
           {isRunning ? (
             <>

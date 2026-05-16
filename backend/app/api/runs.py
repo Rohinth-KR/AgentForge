@@ -5,12 +5,13 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.core.event_bus import AgentEvent, event_bus
-from app.db import RunRecord, SessionLocal, get_db
+from app.db import AgentMetric, RunRecord, SessionLocal, get_db
 from app.orchestrator import AgentForgeOrchestrator, DEFAULT_PIPELINE
 from app.orchestrator.graph import normalize_pipeline
 from app.orchestrator.state import AgentForgeState
@@ -42,9 +43,25 @@ class RunStatusResponse(BaseModel):
     outputs: dict[str, str | None]
     final_output: str | None
     error_message: str | None
+    total_duration_ms: float | None
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None
+
+
+class RunHistoryItem(BaseModel):
+    run_id: str
+    task: str
+    status: str
+    revision_count: int
+    total_duration_ms: float | None
+    created_at: datetime
+    completed_at: datetime | None
+
+
+class RunHistoryResponse(BaseModel):
+    runs: list[RunHistoryItem]
+    total: int
 
 
 @router.post("", response_model=RunCreateResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -82,6 +99,36 @@ async def create_run(
     )
 
 
+@router.get("/history", response_model=RunHistoryResponse)
+async def list_runs(
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> RunHistoryResponse:
+    """Return recent runs for the history panel."""
+    total = db.query(RunRecord).count()
+    records = (
+        db.query(RunRecord)
+        .order_by(desc(RunRecord.created_at))
+        .limit(limit)
+        .all()
+    )
+    return RunHistoryResponse(
+        runs=[
+            RunHistoryItem(
+                run_id=r.id,
+                task=r.task,
+                status=r.status,
+                revision_count=r.revision_count,
+                total_duration_ms=r.total_duration_ms,
+                created_at=r.created_at,
+                completed_at=r.completed_at,
+            )
+            for r in records
+        ],
+        total=total,
+    )
+
+
 @router.get("/{run_id}", response_model=RunStatusResponse)
 async def get_run(
     run_id: str,
@@ -99,6 +146,8 @@ def execute_pipeline_run(run_id: str) -> None:
         return
 
     pipeline = json.loads(record.pipeline_json)
+    run_start_time = utc_now()
+
     _update_run(
         run_id,
         status="running",
@@ -108,6 +157,8 @@ def execute_pipeline_run(run_id: str) -> None:
 
     # Track the previously active agent so we can emit start/complete events
     _prev_agent: dict[str, str | None] = {"name": None}
+    # Track per-agent timing
+    _agent_start_time: dict[str, datetime] = {}
 
     def on_update(update: AgentForgeState) -> None:
         current = update.get("current_agent")
@@ -116,6 +167,9 @@ def execute_pipeline_run(run_id: str) -> None:
         # If the active agent changed, emit complete for old + start for new
         if current and current != prev:
             if prev:
+                # Record metric for the agent that just finished
+                _record_agent_metric(run_id, prev, _agent_start_time.get(prev))
+
                 # Emit the output produced by the agent that just finished
                 output_key = {
                     "researcher": "research_output",
@@ -135,6 +189,9 @@ def execute_pipeline_run(run_id: str) -> None:
                     type="agent_complete",
                     agent=prev,
                 ))
+
+            # Mark start time for the new agent
+            _agent_start_time[current] = utc_now()
             event_bus.publish(AgentEvent(
                 run_id=run_id,
                 type="agent_start",
@@ -164,11 +221,14 @@ def execute_pipeline_run(run_id: str) -> None:
             content=str(exc),
         ))
         event_bus.close(run_id)
+
+        total_ms = (utc_now() - run_start_time).total_seconds() * 1000
         _update_run(
             run_id,
             status="failed",
             current_agent=None,
             error_message=str(exc),
+            total_duration_ms=total_ms,
             updated_at=utc_now(),
             completed_at=utc_now(),
         )
@@ -177,6 +237,8 @@ def execute_pipeline_run(run_id: str) -> None:
     # Emit final agent_complete for the last active agent
     last_agent = _prev_agent["name"]
     if last_agent:
+        _record_agent_metric(run_id, last_agent, _agent_start_time.get(last_agent))
+
         output_key = {
             "researcher": "research_output",
             "writer": "writer_output",
@@ -197,6 +259,8 @@ def execute_pipeline_run(run_id: str) -> None:
             agent=last_agent,
         ))
 
+    total_ms = (utc_now() - run_start_time).total_seconds() * 1000
+
     event_bus.publish(AgentEvent(
         run_id=run_id,
         type="run_complete",
@@ -205,6 +269,7 @@ def execute_pipeline_run(run_id: str) -> None:
             "quality_status": final_state.get("quality_status"),
             "revision_count": final_state.get("revision_count", 0),
             "agent_trace": final_state.get("agent_trace", []),
+            "total_duration_ms": round(total_ms),
         },
     ))
     event_bus.close(run_id)
@@ -217,6 +282,7 @@ def execute_pipeline_run(run_id: str) -> None:
         critic_error_count=final_state.get("critic_error_count", 0),
         final_output=final_state.get("final_output"),
         state_json=json.dumps(final_state),
+        total_duration_ms=total_ms,
         updated_at=utc_now(),
         completed_at=utc_now(),
     )
@@ -245,6 +311,7 @@ def serialize_run(record: RunRecord) -> RunStatusResponse:
         },
         final_output=record.final_output,
         error_message=record.error_message,
+        total_duration_ms=record.total_duration_ms,
         created_at=record.created_at,
         updated_at=record.updated_at,
         completed_at=record.completed_at,
@@ -273,4 +340,24 @@ def _update_run(run_id: str, **values: Any) -> None:
             if value is _sentinel:
                 continue
             setattr(record, key, value)
+        db.commit()
+
+
+def _record_agent_metric(run_id: str, agent_name: str, start_time: datetime | None) -> None:
+    """Record timing for a single agent execution."""
+    now = utc_now()
+    duration_ms = None
+    if start_time:
+        duration_ms = (now - start_time).total_seconds() * 1000
+
+    with SessionLocal() as db:
+        metric = AgentMetric(
+            run_id=run_id,
+            agent_name=agent_name,
+            start_time=start_time or now,
+            end_time=now,
+            duration_ms=duration_ms,
+            tool_calls=1,  # Each agent makes at least 1 LLM call
+        )
+        db.add(metric)
         db.commit()

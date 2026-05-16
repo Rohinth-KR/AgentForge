@@ -3,6 +3,7 @@ import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.metrics import router as metrics_router
 from app.api.runs import router as runs_router
 from app.api.streaming import router as streaming_router
 from app.core.event_bus import event_bus
@@ -10,7 +11,7 @@ from app.db import init_db
 
 app = FastAPI(
     title="AgentForge API",
-    version="0.2.0",
+    version="0.5.0",
     description="Backend API for the AgentForge multi-agent orchestration platform.",
 )
 
@@ -25,6 +26,7 @@ app.add_middleware(
 
 app.include_router(runs_router)
 app.include_router(streaming_router)
+app.include_router(metrics_router)
 
 
 @app.on_event("startup")

@@ -10,7 +10,8 @@ import {
   applyEdgeChanges,
   addEdge,
 } from "@xyflow/react";
-import type { AgentNodeData, AgentDef, AgentStatus, StreamEvent } from "../types";
+import type { AgentNodeData, AgentDef, AgentStatus, StreamEvent, PipelineTemplate } from "../types";
+import { AGENT_CATALOG } from "../types";
 import { getLayoutedElements } from "../utils/layout";
 
 /* ── Types ─────────────────────────────────────────────────────── */
@@ -22,6 +23,38 @@ export interface LogEntry {
   agent?: string;
   content?: string;
 }
+
+/* ── localStorage keys ─────────────────────────────────────────── */
+const LS_KEY_NODES = "agentforge_canvas_nodes";
+const LS_KEY_EDGES = "agentforge_canvas_edges";
+const LS_KEY_TASK = "agentforge_canvas_task";
+
+function saveToStorage(nodes: Node<AgentNodeData>[], edges: Edge[], task: string) {
+  try {
+    localStorage.setItem(LS_KEY_NODES, JSON.stringify(nodes));
+    localStorage.setItem(LS_KEY_EDGES, JSON.stringify(edges));
+    localStorage.setItem(LS_KEY_TASK, task);
+  } catch { /* quota exceeded — ignore */ }
+}
+
+function loadFromStorage(): { nodes: Node<AgentNodeData>[]; edges: Edge[]; task: string } | null {
+  try {
+    const nodesJson = localStorage.getItem(LS_KEY_NODES);
+    const edgesJson = localStorage.getItem(LS_KEY_EDGES);
+    const task = localStorage.getItem(LS_KEY_TASK) || "";
+    if (nodesJson && edgesJson) {
+      return {
+        nodes: JSON.parse(nodesJson),
+        edges: JSON.parse(edgesJson),
+        task,
+      };
+    }
+  } catch { /* corrupted — ignore */ }
+  return null;
+}
+
+/* ── Initial state from localStorage ───────────────────────────── */
+const saved = loadFromStorage();
 
 interface CanvasStore {
   /* React Flow state */
@@ -41,10 +74,16 @@ interface CanvasStore {
   logs: LogEntry[];
   finalOutput: string;
 
+  /* Panels */
+  activePanel: "none" | "history" | "stats";
+  setActivePanel: (panel: "none" | "history" | "stats") => void;
+
   /* Actions */
   addAgentNode: (def: AgentDef) => void;
   removeNode: (id: string) => void;
   autoLayout: () => void;
+  loadTemplate: (template: PipelineTemplate) => void;
+  clearCanvas: () => void;
   startRun: () => Promise<void>;
   handleStreamEvent: (event: StreamEvent) => void;
   setNodeStatus: (agentId: string, status: AgentStatus) => void;
@@ -61,31 +100,51 @@ function nowStamp(): string {
 
 /* ── Store ──────────────────────────────────────────────────────── */
 export const useCanvasStore = create<CanvasStore>((set, get) => ({
-  nodes: [],
-  edges: [],
-  task: "",
+  nodes: saved?.nodes || [],
+  edges: saved?.edges || [],
+  task: saved?.task || "",
   runId: null,
   runStatus: "idle",
   logs: [],
   finalOutput: "",
+  activePanel: "none",
+
+  /* ── Panel toggle ────────────────────────────────────────────── */
+  setActivePanel: (panel) => set((s) => ({
+    activePanel: s.activePanel === panel ? "none" : panel,
+  })),
 
   /* ── React Flow callbacks ────────────────────────────────────── */
   onNodesChange: (changes) =>
-    set((s) => ({ nodes: applyNodeChanges(changes, s.nodes) as Node<AgentNodeData>[] })),
+    set((s) => {
+      const nodes = applyNodeChanges(changes, s.nodes) as Node<AgentNodeData>[];
+      saveToStorage(nodes, s.edges, s.task);
+      return { nodes };
+    }),
 
   onEdgesChange: (changes) =>
-    set((s) => ({ edges: applyEdgeChanges(changes, s.edges) })),
+    set((s) => {
+      const edges = applyEdgeChanges(changes, s.edges);
+      saveToStorage(s.nodes, edges, s.task);
+      return { edges };
+    }),
 
   onConnect: (connection) =>
-    set((s) => ({
-      edges: addEdge(
+    set((s) => {
+      const edges = addEdge(
         { ...connection, animated: true, style: { stroke: "hsl(270,80%,65%)", strokeWidth: 2 } },
         s.edges
-      ),
-    })),
+      );
+      saveToStorage(s.nodes, edges, s.task);
+      return { edges };
+    }),
 
   /* ── Task ─────────────────────────────────────────────────────── */
-  setTask: (task) => set({ task }),
+  setTask: (task) => {
+    set({ task });
+    const s = get();
+    saveToStorage(s.nodes, s.edges, task);
+  },
 
   /* ── Add an agent node to the canvas ─────────────────────────── */
   addAgentNode: (def) => {
@@ -93,7 +152,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const newNode: Node<AgentNodeData> = {
       id,
       type: "agentNode",
-      position: { x: 0, y: 0 }, // dagre will fix this
+      position: { x: 0, y: 0 },
       data: {
         agentId: def.id,
         label: def.label,
@@ -108,23 +167,82 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     set((s) => {
       const nodes = [...s.nodes, newNode];
       const laid = getLayoutedElements(nodes, s.edges);
-      return { nodes: laid.nodes as Node<AgentNodeData>[], edges: laid.edges };
+      const finalNodes = laid.nodes as Node<AgentNodeData>[];
+      saveToStorage(finalNodes, laid.edges, s.task);
+      return { nodes: finalNodes, edges: laid.edges };
     });
   },
 
   /* ── Remove a node ───────────────────────────────────────────── */
   removeNode: (id) =>
-    set((s) => ({
-      nodes: s.nodes.filter((n) => n.id !== id),
-      edges: s.edges.filter((e) => e.source !== id && e.target !== id),
-    })),
+    set((s) => {
+      const nodes = s.nodes.filter((n) => n.id !== id);
+      const edges = s.edges.filter((e) => e.source !== id && e.target !== id);
+      saveToStorage(nodes, edges, s.task);
+      return { nodes, edges };
+    }),
 
   /* ── Auto-layout ─────────────────────────────────────────────── */
   autoLayout: () =>
     set((s) => {
       const laid = getLayoutedElements(s.nodes, s.edges);
-      return { nodes: laid.nodes as Node<AgentNodeData>[], edges: laid.edges };
+      const nodes = laid.nodes as Node<AgentNodeData>[];
+      saveToStorage(nodes, laid.edges, s.task);
+      return { nodes, edges: laid.edges };
     }),
+
+  /* ── Load a pipeline template ────────────────────────────────── */
+  loadTemplate: (template) => {
+    const { clearCanvas } = get();
+    clearCanvas();
+
+    // Add nodes for each agent in the template
+    const newNodes: Node<AgentNodeData>[] = [];
+    const newEdges: Edge[] = [];
+
+    template.agents.forEach((agentId, index) => {
+      const def = AGENT_CATALOG.find((a) => a.id === agentId);
+      if (!def) return;
+
+      const nodeId = `${def.id}-${++nodeCounter}`;
+      newNodes.push({
+        id: nodeId,
+        type: "agentNode",
+        position: { x: 0, y: 0 },
+        data: {
+          agentId: def.id,
+          label: def.label,
+          tools: def.tools,
+          color: def.color,
+          icon: def.icon,
+          status: "idle",
+          output: "",
+        },
+      });
+
+      // Connect to previous node
+      if (index > 0) {
+        newEdges.push({
+          id: `e-${newNodes[index - 1].id}-${nodeId}`,
+          source: newNodes[index - 1].id,
+          target: nodeId,
+          animated: true,
+          style: { stroke: "hsl(270,80%,65%)", strokeWidth: 2 },
+        });
+      }
+    });
+
+    const laid = getLayoutedElements(newNodes, newEdges);
+    const finalNodes = laid.nodes as Node<AgentNodeData>[];
+    saveToStorage(finalNodes, laid.edges, get().task);
+    set({ nodes: finalNodes, edges: laid.edges });
+  },
+
+  /* ── Clear the canvas ────────────────────────────────────────── */
+  clearCanvas: () => {
+    saveToStorage([], [], get().task);
+    set({ nodes: [], edges: [] });
+  },
 
   /* ── Start a pipeline run ────────────────────────────────────── */
   startRun: async () => {
@@ -132,10 +250,8 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     if (!task.trim()) return;
     if (nodes.length === 0) return;
 
-    // Derive pipeline order from edges (topological sort via source→target)
     const pipeline = derivePipeline(nodes, edges);
 
-    // Reset all nodes to idle
     set((s) => ({
       nodes: s.nodes.map((n) => ({
         ...n,
@@ -229,7 +345,6 @@ function derivePipeline(nodes: Node<AgentNodeData>[], edges: Edge[]): string[] {
     return nodes.map((n) => n.data.agentId);
   }
 
-  // Find nodes with no incoming edges (roots)
   const hasIncoming = new Set(edges.map((e) => e.target));
   const roots = nodes.filter((n) => !hasIncoming.has(n.id));
 
@@ -254,7 +369,6 @@ function derivePipeline(nodes: Node<AgentNodeData>[], edges: Edge[]): string[] {
 
   roots.forEach((r) => walk(r.id));
 
-  // Add any unvisited nodes at the end
   nodes.forEach((n) => {
     if (!visited.has(n.id)) ordered.push(n.data.agentId);
   });
